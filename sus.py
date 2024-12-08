@@ -151,7 +151,7 @@ async def check_proxies():
             break
 
         logger.info(f"Checking proxy {proxy}")
-        await connect_to_wss(proxy, user_id="2p4GgmhEwvn4B8NPpwyxHnAbzjk")
+        await connect_to_wss(proxy, user_id="2p4NbqPTWP37Q65LB3spmgHTT2B")
         await asyncio.sleep(0.01)
 
         proxy_queue.task_done()
