@@ -1,53 +1,131 @@
+import asyncio
+import random
 import ssl
 import json
 import time
 import uuid
-import random
-import asyncio
-import threading
+import base64
+import aiohttp
 import requests
-from loguru import logger
-from fake_useragent import UserAgent
+from datetime import datetime
+from colorama import init, Fore, Style
 from websockets_proxy import Proxy, proxy_connect
-from queue import Queue
 
-total_proxies_fetched = 0
-lock = threading.Lock()
-proxy_queue = Queue()
+init(autoreset=True)
+
+CHROME_USERAGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+]
+
+EDGE_USERAGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.2365.57",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.2277.83",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.2210.91"
+]
+
+HTTP_STATUS_CODES = {
+    200: "OK",
+    201: "Created",
+    202: "Accepted",
+    204: "No Content",
+    400: "Bad Request",
+    401: "Unauthorized",
+    403: "Forbidden",
+    404: "Not Found",
+    500: "Internal Server Error",
+    502: "Bad Gateway",
+    503: "Service Unavailable",
+    504: "Gateway Timeout"
+}
+
+def colorful_log(proxy, device_id, message_type, message_content, is_sent=False):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    color = Fore.GREEN if is_sent else Fore.BLUE
+    action_color = Fore.YELLOW
+    
+    log_message = (
+        f"{Fore.WHITE}[{timestamp}] "
+        f"{Fore.MAGENTA}[Proxy: {proxy}] "
+        f"{Fore.CYAN}[Device ID: {device_id}] "
+        f"{action_color}[{message_type}] "
+        f"{color}{message_content}"
+    )
+    
+    print(log_message)
 
 async def connect_to_wss(socks5_proxy, user_id):
-    user_agent = UserAgent(os=['windows', 'macos', 'linux'], browsers='chrome')
-    random_user_agent = user_agent.random
-    device_id = str(uuid.uuid3(uuid.NAMESPACE_DNS, socks5_proxy))
-    logger.info(f"Connecting using proxy: {socks5_proxy}")
+    device_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, socks5_proxy))
+    
+    random_user_agent = random.choice(CHROME_USERAGENTS) if hash(socks5_proxy) % 2 == 0 else random.choice(EDGE_USERAGENTS)
+
+    colorful_log(
+        proxy=socks5_proxy,  
+        device_id=device_id, 
+        message_type="INITIALIZATION", 
+        message_content=f"User Agent: {random_user_agent}"
+    )
+
     while True:
         try:
             await asyncio.sleep(random.randint(1, 10) / 10)
-            custom_headers = {"User-Agent": random_user_agent}
+            custom_headers = {
+                "User-Agent": random_user_agent,
+                "Origin": "chrome-extension://lkbnfiajjmbhnfledhphioinpickokdi"
+            }
             ssl_context = ssl.create_default_context()
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
-            urilist = ["wss://proxy2.wynd.network:4444/", "wss://proxy2.wynd.network:4650/"]
+            
+            urilist = [
+                #"wss://proxy.wynd.network:4444/",
+                #"wss://proxy.wynd.network:4650/",
+                "wss://proxy2.wynd.network:4444/",
+                "wss://proxy2.wynd.network:4650/",
+                #"wss://proxy3.wynd.network:4444/",
+                #"wss://proxy3.wynd.network:4650/"
+            ]
+            
             uri = random.choice(urilist)
-            server_hostname = "proxy2.wynd.network"
+            server_hostname = "proxy.wynd.network"
             proxy = Proxy.from_url(socks5_proxy)
-
-            async with proxy_connect(uri, proxy=proxy, ssl=ssl_context, server_hostname=server_hostname, extra_headers=custom_headers) as websocket:
+            
+            async with proxy_connect(uri, proxy=proxy, ssl=ssl_context, server_hostname=server_hostname,
+                                     extra_headers=custom_headers) as websocket:
                 async def send_ping():
                     while True:
-                        send_message = json.dumps({
-                            "id": str(uuid.uuid4()), "version": "1.0.0", "action": "PING", "data": {}
-                        })
-                        logger.debug(f"Sending PING: {send_message}")
+                        send_message = json.dumps(
+                            {"id": str(uuid.uuid5(uuid.NAMESPACE_DNS, socks5_proxy)), 
+                             "version": "1.0.0", 
+                             "action": "PING", 
+                             "data": {}})
+                        
+                        colorful_log(
+                            proxy=socks5_proxy,  
+                            device_id=device_id, 
+                            message_type="SENDING PING", 
+                            message_content=send_message,
+                            is_sent=True
+                        )
+                        
                         await websocket.send(send_message)
                         await asyncio.sleep(5)
 
+                await asyncio.sleep(1)
                 asyncio.create_task(send_ping())
 
                 while True:
                     response = await websocket.recv()
                     message = json.loads(response)
-                    logger.info(f"Received message: {message}")
+                    
+                    colorful_log(
+                        proxy=socks5_proxy, 
+                        device_id=device_id, 
+                        message_type="RECEIVED", 
+                        message_content=json.dumps(message)
+                    )
 
                     if message.get("action") == "AUTH":
                         auth_response = {
@@ -56,133 +134,335 @@ async def connect_to_wss(socks5_proxy, user_id):
                             "result": {
                                 "browser_id": device_id,
                                 "user_id": user_id,
-                                "user_agent": custom_headers['User-Agent'],
+                                "user_agent": random_user_agent,
                                 "timestamp": int(time.time()),
-                                "device_type": "desktop",
-                                "version": "4.29.0",
+                                "device_type": "extension",
+                                "version": "4.26.2",
+                                "extension_id": "lkbnfiajjmbhnfledhphioinpickokdi"
                             }
                         }
-                        logger.debug(f"Sending AUTH: {auth_response}")
+                        
+                        colorful_log(
+                            proxy=socks5_proxy,  
+                            device_id=device_id, 
+                            message_type="AUTHENTICATING", 
+                            message_content=json.dumps(auth_response),
+                            is_sent=True
+                        )
+                        
                         await websocket.send(json.dumps(auth_response))
+                    
+                    elif message.get("action") == "HTTP_REQUEST":
+                        request_data = message["data"]
+                        
+                        headers = {
+                            "User-Agent": custom_headers["User-Agent"],
+                            "Content-Type": "application/json; charset=utf-8"
+                        }
+                        
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(request_data["url"], headers=headers) as api_response:
+                                content = await api_response.text()
+                                encoded_body = base64.b64encode(content.encode()).decode()
+                                
+                                status_text = HTTP_STATUS_CODES.get(api_response.status, "")
+                                
+                                http_response = {
+                                    "id": message["id"],
+                                    "origin_action": "HTTP_REQUEST",
+                                    "result": {
+                                        "url": request_data["url"],
+                                        "status": api_response.status,
+                                        "status_text": status_text,
+                                        "headers": dict(api_response.headers),
+                                        "body": encoded_body
+                                    }
+                                }
+                                
+                                colorful_log(
+                                    proxy=socks5_proxy,
+                                    device_id=device_id,
+                                    message_type="OPENING PING ACCESS",
+                                    message_content=json.dumps(http_response),
+                                    is_sent=True
+                                )
+                                
+                                await websocket.send(json.dumps(http_response))
 
                     elif message.get("action") == "PONG":
                         pong_response = {"id": message["id"], "origin_action": "PONG"}
-                        logger.debug(f"Sending PONG: {pong_response}")
+                        
+                        colorful_log(
+                            proxy=socks5_proxy, 
+                            device_id=device_id, 
+                            message_type="SENDING PONG", 
+                            message_content=json.dumps(pong_response),
+                            is_sent=True
+                        )
+                        
                         await websocket.send(json.dumps(pong_response))
-
         except Exception as e:
-            logger.error(f"Connection failed with proxy {socks5_proxy}: {e}")
-            with open('auto_proxies.txt', 'r', encoding='utf-8') as file:
-                lines = file.readlines()
-            updated_lines = [line for line in lines if line.strip() != socks5_proxy]
-            with open('auto_proxies.txt', 'w', encoding='utf-8') as file:
-                file.writelines(updated_lines)
-            logger.info(f"Proxy '{socks5_proxy}' has been removed from the file.")
-            break
+            colorful_log(
+                proxy=socks5_proxy, 
+                device_id=device_id, 
+                message_type="ERROR", 
+                message_content=str(e)
+            )
+            await asyncio.sleep(5)
 
-def fetch_from_url(url, prefix):
-    global proxies
-    proxies = set()
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        proxy_list = response.text.splitlines()
-        logger.info(f"Fetched {len(proxy_list)} proxies from {url}")
+import asyncio
+import random
+import ssl
+import json
+import time
+import uuid
+import base64
+import aiohttp
+import logging
+from datetime import datetime
+from colorama import init, Fore, Style
+from websockets_proxy import Proxy, proxy_connect
 
-        for proxy in proxy_list:
-            if "://" not in proxy and ":" in proxy:
-                proxies.add(f"{prefix}://{proxy}")
-            elif "://" in proxy:
-                proxies.add(proxy)
-            else:
-                logger.warning(f"Skipping invalid proxy format: {proxy}")
+init(autoreset=True)
 
-    except requests.RequestException as e:
-        logger.error(f"Error fetching proxies from {url}: {e}")
+CHROME_USERAGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+]
 
-    return proxies
+EDGE_USERAGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.2365.57",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.2277.83",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.2210.91"
+]
 
-def save_proxies(proxies):
-    valid_proxies = []
-    for proxy in proxies:
-        if isinstance(proxy, str) and "://" in proxy and ":" in proxy:
-            valid_proxies.append(proxy)
-        else:
-            logger.warning(f"Invalid proxy format: {proxy}")
+HTTP_STATUS_CODES = {
+    200: "OK",
+    201: "Created",
+    202: "Accepted",
+    204: "No Content",
+    400: "Bad Request",
+    401: "Unauthorized",
+    403: "Forbidden",
+    404: "Not Found",
+    500: "Internal Server Error",
+    502: "Bad Gateway",
+    503: "Service Unavailable",
+    504: "Gateway Timeout"
+}
 
-    try:
-        with open("auto_proxies.txt", "w", encoding='utf-8') as f:
-            for proxy in valid_proxies:
-                f.write(f"{proxy}\n")
-        logger.info(f"Saved {len(valid_proxies)} new proxies to 'auto_proxies.txt'.")
-    except Exception as e:
-        logger.error(f"Error saving proxies: {e}")
+def colorful_log(proxy, device_id, message_type, message_content, is_sent=False):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    color = Fore.GREEN if is_sent else Fore.BLUE
+    action_color = Fore.YELLOW
+    
+    log_message = (
+        f"{Fore.WHITE}[{timestamp}] "
+        f"{Fore.MAGENTA}[Proxy: {proxy}] "
+        f"{Fore.CYAN}[Device ID: {device_id}] "
+        f"{action_color}[{message_type}] "
+        f"{color}{message_content}"
+    )
+    
+    print(log_message)
 
-async def fetch_proxies_from_multiple_sources():
-    global total_proxies_fetched
+async def connect_to_wss(socks5_proxy, user_id):
+    device_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, socks5_proxy))
+    
+    random_user_agent = random.choice(CHROME_USERAGENTS) if hash(socks5_proxy) % 2 == 0 else random.choice(EDGE_USERAGENTS)
 
-    proxy_urls = [
-        ("https://api.openproxylist.xyz/http.txt", "http"),
-        ("https://api.openproxylist.xyz/socks4.txt", "socks4"),
-        ("https://api.openproxylist.xyz/socks5.txt", "socks5"),
-        ("https://www.proxy-list.download/api/v1/get?type=socks5", "socks5"),
-        ("https://www.proxy-list.download/api/v1/get?type=socks4", "socks4"),
-        ("https://www.proxy-list.download/api/v1/get?type=http", "http"),
-        ("https://api.proxyscrape.com/v3/free-proxy-list/get?request=displayproxies&proxy_format=protocolipport", ""),
-        ("https://proxylist.geonode.com/api/proxy-list?limit=500&page=14&sort_by=lastChecked&sort_type=desc", "")
-    ]
+    colorful_log(
+        proxy=socks5_proxy,  
+        device_id=device_id, 
+        message_type="INITIALIZATION", 
+        message_content=f"User Agent: {random_user_agent}"
+    )
 
-    threads = []
-    for url, prefix in proxy_urls:
-        thread = threading.Thread(target=fetch_from_url, args=(url, prefix))
-        threads.append(thread)
-        thread.start()
-
-    for thread in threads:
-        thread.join()
-
-    logger.info(f"Total proxies fetched: {len(proxies)}")
-    return list(proxies)
-
-async def check_proxies():
     while True:
-        proxy = proxy_queue.get()
-        if proxy is None:
-            break
+        try:
+            await asyncio.sleep(random.randint(1, 10) / 10)
+            custom_headers = {
+                "User-Agent": random_user_agent,
+                "Origin": "chrome-extension://lkbnfiajjmbhnfledhphioinpickokdi"
+            }
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            
+            urilist = [
+                #"wss://proxy.wynd.network:4444/",
+                #"wss://proxy.wynd.network:4650/",
+                "wss://proxy2.wynd.network:4444/",
+                "wss://proxy2.wynd.network:4650/",
+                #"wss://proxy3.wynd.network:4444/",
+                #"wss://proxy3.wynd.network:4650/"
+            ]
+            
+            uri = random.choice(urilist)
+            server_hostname = "proxy.wynd.network"
+            proxy = Proxy.from_url(socks5_proxy)
+            
+            async with proxy_connect(uri, proxy=proxy, ssl=ssl_context, server_hostname=server_hostname,
+                                     extra_headers=custom_headers) as websocket:
+                async def send_ping():
+                    while True:
+                        send_message = json.dumps(
+                            {"id": str(uuid.uuid5(uuid.NAMESPACE_DNS, socks5_proxy)), 
+                             "version": "1.0.0", 
+                             "action": "PING", 
+                             "data": {}})
+                        
+                        colorful_log(
+                            proxy=socks5_proxy,  
+                            device_id=device_id, 
+                            message_type="SENDING PING", 
+                            message_content=send_message,
+                            is_sent=True
+                        )
+                        
+                        await websocket.send(send_message)
+                        await asyncio.sleep(5)
 
-        logger.info(f"Checking proxy {proxy}")
-        await connect_to_wss(proxy, user_id="2p4GgmhEwvn4B8NPpwyxHnAbzjk")
-        await asyncio.sleep(0.01)
+                await asyncio.sleep(1)
+                asyncio.create_task(send_ping())
 
-        proxy_queue.task_done()
+                while True:
+                    response = await websocket.recv()
+                    message = json.loads(response)
+                    
+                    colorful_log(
+                        proxy=socks5_proxy, 
+                        device_id=device_id, 
+                        message_type="RECEIVED", 
+                        message_content=json.dumps(message)
+                    )
+
+                    if message.get("action") == "AUTH":
+                        auth_response = {
+                            "id": message["id"],
+                            "origin_action": "AUTH",
+                            "result": {
+                                "browser_id": device_id,
+                                "user_id": user_id,
+                                "user_agent": random_user_agent,
+                                "timestamp": int(time.time()),
+                                "device_type": "extension",
+                                "version": "4.26.2",
+                                "extension_id": "lkbnfiajjmbhnfledhphioinpickokdi"
+                            }
+                        }
+                        
+                        colorful_log(
+                            proxy=socks5_proxy,  
+                            device_id=device_id, 
+                            message_type="AUTHENTICATING", 
+                            message_content=json.dumps(auth_response),
+                            is_sent=True
+                        )
+                        
+                        await websocket.send(json.dumps(auth_response))
+                    
+                    elif message.get("action") == "HTTP_REQUEST":
+                        request_data = message["data"]
+                        
+                        headers = {
+                            "User-Agent": custom_headers["User-Agent"],
+                            "Content-Type": "application/json; charset=utf-8"
+                        }
+                        
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(request_data["url"], headers=headers) as api_response:
+                                content = await api_response.text()
+                                encoded_body = base64.b64encode(content.encode()).decode()
+                                
+                                status_text = HTTP_STATUS_CODES.get(api_response.status, "")
+                                
+                                http_response = {
+                                    "id": message["id"],
+                                    "origin_action": "HTTP_REQUEST",
+                                    "result": {
+                                        "url": request_data["url"],
+                                        "status": api_response.status,
+                                        "status_text": status_text,
+                                        "headers": dict(api_response.headers),
+                                        "body": encoded_body
+                                    }
+                                }
+                                
+                                colorful_log(
+                                    proxy=socks5_proxy,
+                                    device_id=device_id,
+                                    message_type="OPENING PING ACCESS",
+                                    message_content=json.dumps(http_response),
+                                    is_sent=True
+                                )
+                                
+                                await websocket.send(json.dumps(http_response))
+
+                    elif message.get("action") == "PONG":
+                        pong_response = {"id": message["id"], "origin_action": "PONG"}
+                        
+                        colorful_log(
+                            proxy=socks5_proxy, 
+                            device_id=device_id, 
+                            message_type="SENDING PONG", 
+                            message_content=json.dumps(pong_response),
+                            is_sent=True
+                        )
+                        
+                        await websocket.send(json.dumps(pong_response))
+        except Exception as e:
+            colorful_log(
+                proxy=socks5_proxy, 
+                device_id=device_id, 
+                message_type="ERROR", 
+                message_content=str(e)
+            )
+            await asyncio.sleep(5)
+
+def fetch_proxies():
+    """Fetches proxies from the API and saves them to 'auto_proxies.txt'."""
+    api_url = "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=protocolipport&format=text"
+    try:
+        response = requests.get(api_url, stream=True)
+        if response.status_code == 200:
+            proxies = response.text.strip().splitlines()
+            if proxies:
+                with open('auto_proxies.txt', 'w') as f:
+                    f.writelines([proxy + '\n' for proxy in proxies])
+                print(f"Fetched and saved {len(proxies)} proxies to 'auto_proxies.txt'.")
+            else:
+                print("No proxies found from the API.")
+                return False
+        else:
+            print(f"Failed to fetch proxies. Status code: {response.status_code}")
+            return False
+    except Exception as e:
+        print(f"Error fetching proxies: {e}")
+        return False
+    return True
 
 async def main():
-    proxies = await fetch_proxies_from_multiple_sources()
-    if not proxies:
-        logger.error("No proxies fetched. Exiting script.")
+    _user_id = "2p4GgmhEwvn4B8NPpwyxHnAbzjk"
+    if not fetch_proxies():
+        print("No proxies available. Exiting script.")
         return
-
-    logger.info(f"Total unique proxies fetched: {len(proxies)}")
-    
-    save_proxies(proxies)
 
     try:
-        with open('auto_proxies.txt', 'r', encoding='utf-8') as file:
+        with open('auto_proxies.txt', 'r') as file:
             auto_proxy_list = file.read().splitlines()
             if not auto_proxy_list:
-                logger.error("No proxies found in 'auto_proxies.txt'. Exiting script.")
+                print("No proxies found in 'auto_proxies.txt'. Exiting script.")
                 return
-            logger.info(f"Proxies read from file: {auto_proxy_list}")
+            print(f"Proxies read from file: {auto_proxy_list}")
     except FileNotFoundError:
-        logger.error("Error: 'auto_proxies.txt' file not found. Exiting script.")
+        print("Error: 'auto_proxies.txt' file not found.")
         return
 
-    for proxy in auto_proxy_list:
-        proxy_queue.put(proxy)
-
-    logger.info(f"Starting proxy check for {len(auto_proxy_list)} proxies.")
-    tasks = [asyncio.create_task(check_proxies()) for _ in range(500)]
+    tasks = [asyncio.ensure_future(connect_to_wss(i, _user_id)) for i in auto_proxy_list]
     await asyncio.gather(*tasks)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     asyncio.run(main())
