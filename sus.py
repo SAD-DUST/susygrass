@@ -2,7 +2,8 @@ import asyncio
 import aiohttp
 
 # ================== CONFIG ==================
-INPUT_FILE = "alive1.txt"      # initial list of proxies to test
+INPUT_FILE = "/home/runner/work/susygrass/susygrass/alive1.txt"
+      # initial list of proxies to test
 OUTPUT_FILE = "a.txt"          # alive proxies saved here
 TARGET_URL = "https://c3phucu.hungyen.edu.vn/tin-tuc/thoi-khoa-bieu-so-1-ca-chieu.html"
 TIMEOUT = 50
