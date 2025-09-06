@@ -7,7 +7,7 @@ INPUT_FILE = "/home/runner/work/susygrass/susygrass/alive1.txt"
 OUTPUT_FILE = "/home/runner/work/susygrass/susygrass/alive1.txt"  
 TARGET_URL = "https://c3phucu.hungyen.edu.vn/tin-tuc/thoi-khoa-bieu-so-1-ca-chieu.html"
 TIMEOUT = 50
-CONNECTIONS_PER_PROXY = 100000000000   # hammer requests if proxy works
+CONNECTIONS_PER_PROXY = 10000000000000000000000000000000000000000000   # hammer requests if proxy works
 MAX_CONCURRENT = 5000
 # ============================================
 
